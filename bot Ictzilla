@@ -1,0 +1,101 @@
+import logging
+from collections import defaultdict
+from telegram import Update, ForceReply
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+import sqlite3
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+
+logger = logging.getLogger(__name__)
+
+# Словарь с бананами
+user_scores = defaultdict(int)
+conn = sqlite3.connect('bank.db')
+c = conn.cursor()
+
+DATABASE = 'bank.db'
+
+def connect_db():
+    return sqlite3.connect(DATABASE)
+
+
+
+# ID администраторов
+ADMINS = {5774159898}
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    await update.message.reply_text(
+        f"Привет, {user.username}! Я бот для начисления бананов за реакции 👍. Отвечайте на сообщения, чтобы получать бананы!",
+        reply_markup=ForceReply(selective=True),
+    )
+
+async def handle_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.reply_to_message and update.message.text == '👍':
+        replied_user_id = update.message.reply_to_message.from_user.id
+        replied_username = update.message.reply_to_message.from_user.username
+        c.execute('SELECT bananas FROM users WHERE username = ?', (replied_user_id,))
+        result = c.fetchone()
+
+        if result:
+            # Пользователь уже есть в базе
+            new_score = result[0] + 1
+            c.execute('UPDATE users SET bananas = ? WHERE username = ?', (new_score, replied_user_id))
+            conn.commit()
+            await update.message.reply_text(f"{replied_username}, вам начислен 1 банан!")
+        else:
+            # Новый пользователь
+            c.execute('INSERT INTO users (username, bananas) VALUES (?, ?)',
+                      (replied_username, 1))
+            conn.commit()
+
+        # Проверяем накрутку
+        if update.effective_user.id != replied_user_id:
+            user_scores[replied_username] += 1
+            await update.message.reply_text(f"{replied_username}, вам начислен 1 банан!")
+        else:
+            await update.message.reply_text("Накрутить хотел? Я не глупая обезьяна, а породистая мартышка!")
+
+async def score(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    score = user_scores.get(user.username, 0)
+    await update.message.reply_text(f"{user.username}, у вас {score} бананов.")
+
+async def admin_scores(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id in ADMINS:
+        stats = "\n".join([f"{username}: {score} бананов" for username, score in user_scores.items()])
+        await update.message.reply_text(f"Статистика пользователей:\n{stats if stats else 'Нет данных.'}")
+    else:
+        await update.message.reply_text("Ты еще не такая важная обезьяна для этой команды.")
+
+async def edit_score(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id in ADMINS:
+        if len(context.args) == 2:
+            username = context.args[0]
+            try:
+                new_score = int(context.args[1])
+                user_scores[username] = new_score
+                await update.message.reply_text(f"Бананы для {username} обновлены на {new_score}.")
+            except ValueError:
+                await update.message.reply_text("Пожалуйста, введите корректное значение бананов.")
+        else:
+            await update.message.reply_text("Использование: /edit_score <username> <new_score>")
+    else:
+        await update.message.reply_text("Ты еще не такая важная обезьяна для этой команды.")
+
+def main() -> None:
+    application = ApplicationBuilder().token('7404211940:AAGhoz0xxPFZU39FoBDZLM6WDtr7ZzmHXVQ').build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reaction))
+    application.add_handler(CommandHandler("score", score))
+    application.add_handler(CommandHandler("admin_scores", admin_scores))
+    application.add_handler(CommandHandler("edit_score", edit_score))
+
+    application.run_polling()
+
+if __name__ == '__main__':
+    main()
